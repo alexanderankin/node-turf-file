@@ -2,6 +2,7 @@
 
 #include <napi.h>
 #include <node.h>
+#include <nan.h>
 #include <v8.h>
 
 
@@ -9,6 +10,9 @@ static Napi::Function stringify;
 static Napi::Function concat;
 
 Napi::Value UnPack(const Napi::CallbackInfo& info) {
+  if (concat.IsNull())
+    throw Napi::TypeError::New(info.Env(), "Not initialized");
+
   Napi::Env env = info.Env();
   size_t length = info.Length();
   if (length != 1)
@@ -18,6 +22,9 @@ Napi::Value UnPack(const Napi::CallbackInfo& info) {
 }
 
 Napi::Buffer<float> Pack(const Napi::CallbackInfo& info) {
+  if (concat.IsNull())
+    throw Napi::TypeError::New(info.Env(), "Not initialized");
+
   Napi::Env env = info.Env();
   size_t length = info.Length();
   if (length != 2)
@@ -83,17 +90,63 @@ Napi::Buffer<float> Pack(const Napi::CallbackInfo& info) {
   return output;
 }
 
+static inline
+napi_value JsValueFromV8LocalValue(v8::Local<v8::Value> local) {
+  return reinterpret_cast<napi_value>(*local);
+}
+
+Napi::Value Test(const Napi::CallbackInfo& info) {
+  v8::Local<v8::String> json_string = Nan::New("{ \"JSON\": \"object\" }").ToLocalChecked();
+
+  Nan::JSON NanJSON;
+  Nan::MaybeLocal<v8::Value> result = NanJSON.Parse(json_string);
+  if (!result.IsEmpty()) {
+    v8::Local<v8::Value> val = result.ToLocalChecked();
+
+    Napi::Object value = Napi::Value::From(info.Env(), JsValueFromV8LocalValue(val)).As<Napi::Object>();
+    napi_value value1 = napi_value(value);
+    v8::Local<v8::Object> value2;
+
+    printf("%lu %lu\n", sizeof (v8::Local<v8::Object>), sizeof (napi_value));
+
+    std::memcpy(&value2, &value1, sizeof (v8::Local<v8::Object>));
+
+    Nan::MaybeLocal<v8::String> valueStringified = NanJSON.Stringify(value2);
+    if (!valueStringified.IsEmpty())
+    {
+      return Napi::Value::From(info.Env(), JsValueFromV8LocalValue(valueStringified.ToLocalChecked()));
+    }
+  }
+
+  return info.Env().Null();
+}
+
+Napi::Value ThrowIfMissing(const Napi::CallbackInfo& info) {
+  throw Napi::TypeError::New(info.Env(), "Undefined is not a function");
+}
+
+Napi::Value Initialize(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  Napi::Value arg1 = info[0];
+  if (!arg1.IsFunction())
+    throw Napi::TypeError::New(env, "Require is not a function");
+
+  Napi::Function require = arg1.As<Napi::Function>();
+  Napi::Value bufferValue = require.Call({Napi::String::New(env, "buffer")});
+  Napi::Object buffer = bufferValue.As<Napi::Object>();
+  Napi::Object Buffer = buffer.Get("Buffer").As<Napi::Function>();
+  concat = Buffer.Get("concat").As<Napi::Function>();
+  return env.Undefined();
+}
+
 Napi::Object init(Napi::Env env, Napi::Object exports) {
-  printf("line: %d\n", __LINE__); Napi::Object global = env.Global();
-  printf("line: %d\n", __LINE__); Napi::Object JSON = global.Get("JSON").As<Napi::Object>();
-  printf("line: %d\n", __LINE__); stringify = JSON.Get("stringify").As<Napi::Function>();
-  printf("line: %d\n", __LINE__); Napi::Function require = global.Get("require").As<Napi::Function>();
-  printf("line: %d\n", __LINE__); Napi::Value bufferValue = require.Call({Napi::String::New(env, "buffer")});
-  printf("line: %d\n", __LINE__); Napi::Object buffer = bufferValue.As<Napi::Object>();
-  printf("line: %d\n", __LINE__); Napi::Object Buffer = buffer.Get("Buffer").As<Napi::Function>();
-  printf("line: %d\n", __LINE__); concat = Buffer.Get("concat").As<Napi::Function>();
+  Napi::Object global = env.Global();
+  Napi::Object JSON = global.Get("JSON").As<Napi::Object>();
+  stringify = JSON.Get("stringify").As<Napi::Function>();
+  concat = Napi::Function::New(env, ThrowIfMissing);
 
-
+  exports.Set(Napi::String::New(env, "test"), Napi::Function::New(env, Test));
+  exports.Set(Napi::String::New(env, "init_"), Napi::Function::New(env, Initialize));
   exports.Set(Napi::String::New(env, "pack"), Napi::Function::New(env, Pack));
   exports.Set(Napi::String::New(env, "unpack"), Napi::Function::New(env, UnPack));
   return exports;
